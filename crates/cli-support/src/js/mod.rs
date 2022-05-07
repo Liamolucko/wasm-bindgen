@@ -54,8 +54,10 @@ pub struct Context<'a> {
     /// used in function names, as well as all the kinds of views we've created
     /// of that memory.
     ///
+    /// A view kind of `None` represents the raw `ArrayBuffer` memory.
+    ///
     /// `BTreeMap` and `BTreeSet` are used to make the ordering deterministic.
-    memories: BTreeMap<MemoryId, (usize, BTreeSet<&'static str>)>,
+    memories: BTreeMap<MemoryId, (usize, BTreeSet<Option<&'static str>>)>,
     table_indices: HashMap<TableId, usize>,
 
     /// A flag to track if the stack pointer setter shim has been injected.
@@ -604,14 +606,24 @@ impl<'a> Context<'a> {
             };
 
             for kind in views {
-                writeln!(
-                    out,
-                    "cached{kind}Memory{num} = new {kind}Array(wasm.{mem}.buffer);",
-                    kind = kind,
-                    num = num,
-                    mem = mem,
-                )
-                .unwrap()
+                if let Some(kind) = kind {
+                    writeln!(
+                        out,
+                        "cached{kind}Memory{num} = new {kind}Array(wasm.{mem}.buffer);",
+                        kind = kind,
+                        num = num,
+                        mem = mem,
+                    )
+                    .unwrap()
+                } else {
+                    writeln!(
+                        out,
+                        "cachedRawMemory{num} = wasm.{mem}.buffer",
+                        num = num,
+                        mem = mem
+                    )
+                    .unwrap();
+                }
             }
         }
         out
@@ -1110,11 +1122,11 @@ impl<'a> Context<'a> {
             ""
         };
 
-        let mem = self.export_name_of(memory);
-        let get_mem = self.expose_uint8_memory(memory);
+        let raw_mem = self.expose_raw_memory(memory);
+        let u8_mem = self.expose_uint8_memory(memory);
         let ret = MemView {
             name: "passStringToWasm".into(),
-            num: get_mem.num,
+            num: u8_mem.num,
         };
         if !self.should_write_global(ret.to_string()) {
             return Ok(ret);
@@ -1205,7 +1217,7 @@ impl<'a> Context<'a> {
                     mem[ptr + offset] = code;
                 }}
             ",
-            mem = get_mem,
+            mem = u8_mem,
         );
 
         // TODO:
@@ -1223,7 +1235,7 @@ impl<'a> Context<'a> {
                     }}
                     const remainingLen = arg.length * 3;
                     ptr = realloc(ptr, len, len = offset + remainingLen);
-                    const view = new Uint8Array(wasm.{mem}.buffer, ptr + offset, remainingLen);
+                    const view = new Uint8Array({mem}(), ptr + offset, remainingLen);
                     const ret = encodeString(arg, view);
                     {debug_end}
                     offset += ret.written;
@@ -1235,7 +1247,7 @@ impl<'a> Context<'a> {
             name = ret,
             debug = debug,
             ascii = encode_as_ascii,
-            mem = mem,
+            mem = raw_mem,
             debug_end = if self.config.debug {
                 "if (ret.read !== arg.length) throw new Error('failed to pass whole string');"
             } else {
@@ -1439,8 +1451,8 @@ impl<'a> Context<'a> {
             let mem = self.expose_uint8_memory(memory);
             format!("{}().slice(ptr, ptr + len)", mem)
         } else {
-            let mem = self.export_name_of(memory);
-            format!("new Uint8Array(wasm.{}.buffer, ptr, len)", mem)
+            let mem = self.expose_raw_memory(memory);
+            format!("new Uint8Array({}(), ptr, len)", mem)
         };
 
         self.global(&format!(
@@ -1501,22 +1513,22 @@ impl<'a> Context<'a> {
     }
 
     fn expose_get_array_js_value_from_wasm(&mut self, memory: MemoryId) -> Result<MemView, Error> {
+        let mem = self.expose_raw_memory(memory);
         let ret = MemView {
             name: "getArrayJsValueFromWasm".into(),
-            num: self.memory_idx(memory),
+            num: mem.num,
         };
         if !self.should_write_global(ret.to_string()) {
             return Ok(ret);
         }
         match (self.aux.externref_table, self.aux.externref_drop_slice) {
             (Some(table), Some(drop)) => {
-                let mem = self.export_name_of(memory);
                 let table = self.export_name_of(table);
                 let drop = self.export_name_of(drop);
                 self.global(&format!(
                     "
                     function {}(ptr, len) {{
-                        const slice = new Uint32Array(wasm.{}.buffer, ptr, len);
+                        const slice = new Uint32Array({}(), ptr, len);
                         const result = [];
                         for (let i = 0; i < slice.length; i++) {{
                             result.push(wasm.{}.get(slice[i]));
@@ -1530,11 +1542,10 @@ impl<'a> Context<'a> {
             }
             _ => {
                 self.expose_take_object();
-                let mem = self.export_name_of(memory);
                 self.global(&format!(
                     "
                     function {}(ptr, len) {{
-                        const slice = new Uint32Array(wasm.{}.buffer, ptr, len);
+                        const slice = new Uint32Array({}(), ptr, len);
                         const result = [];
                         for (let i = 0; i < slice.length; i++) {{
                             result.push(takeObject(slice[i]));
@@ -1599,18 +1610,18 @@ impl<'a> Context<'a> {
         buffer_kind: &'static str,
         memory: walrus::MemoryId,
     ) -> MemView {
+        let mem = self.expose_raw_memory(memory);
         let ret = MemView {
             name: name.into(),
-            num: self.memory_idx(memory),
+            num: mem.num,
         };
         if !self.should_write_global(name) {
             return ret;
         }
-        let mem = self.export_name_of(memory);
         self.global(&format!(
             "
             function {name}(ptr, len) {{
-                return new {buffer_kind}(wasm.{mem}.buffer, ptr, len);
+                return new {buffer_kind}({mem}(), ptr, len);
             }}
             ",
             name = ret,
@@ -1618,6 +1629,32 @@ impl<'a> Context<'a> {
             mem = mem,
         ));
         return ret;
+    }
+
+    /// Expose WASM memory as an `ArrayBuffer`.
+    fn expose_raw_memory(&mut self, memory: MemoryId) -> MemView {
+        let view = self.memview_memory(None, memory);
+        if !self.should_write_global(view.name.clone()) {
+            return view;
+        }
+        let mem = self.export_name_of(memory);
+        // When a buffer becomes detached, its length returns 0,
+        // which is why we check against that.
+        self.global(&format!(
+            "
+            let {cache};
+            function {name}() {{
+                if ({cache}.byteLength === 0) {{
+                    {cache} = wasm.{mem}.buffer;
+                }}
+                return {cache};
+            }}
+            ",
+            name = view,
+            cache = format_args!("cachedRawMemory{}", view.num),
+            mem = mem,
+        ));
+        return view;
     }
 
     fn expose_uint8_memory(&mut self, memory: MemoryId) -> MemView {
@@ -1649,7 +1686,7 @@ impl<'a> Context<'a> {
     }
 
     fn memview(&mut self, kind: &'static str, memory: walrus::MemoryId) -> MemView {
-        let view = self.memview_memory(kind, memory);
+        let view = self.memview_memory(Some(kind), memory);
         if !self.should_write_global(view.name.clone()) {
             return view;
         }
@@ -1683,7 +1720,7 @@ impl<'a> Context<'a> {
         num
     }
 
-    fn memview_memory(&mut self, kind: &'static str, memory: walrus::MemoryId) -> MemView {
+    fn memview_memory(&mut self, kind: Option<&'static str>, memory: walrus::MemoryId) -> MemView {
         let next = self.memories.len();
         let &mut (num, ref mut kinds) = self
             .memories
@@ -1691,7 +1728,7 @@ impl<'a> Context<'a> {
             .or_insert((next, Default::default()));
         kinds.insert(kind);
         MemView {
-            name: format!("get{}Memory", kind).into(),
+            name: format!("get{}Memory", kind.unwrap_or("Raw")).into(),
             num,
         }
     }
