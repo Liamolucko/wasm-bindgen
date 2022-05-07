@@ -1110,10 +1110,11 @@ impl<'a> Context<'a> {
             ""
         };
 
-        let mem = self.expose_uint8_memory(memory);
+        let mem = self.export_name_of(memory);
+        let get_mem = self.expose_uint8_memory(memory);
         let ret = MemView {
             name: "passStringToWasm".into(),
-            num: mem.num,
+            num: get_mem.num,
         };
         if !self.should_write_global(ret.to_string()) {
             return Ok(ret);
@@ -1186,7 +1187,7 @@ impl<'a> Context<'a> {
                 if (realloc === undefined) {{
                     const buf = cachedTextEncoder.encode(arg);
                     const ptr = malloc(buf.length);
-                    {mem}().subarray(ptr, ptr + buf.length).set(buf);
+                    {mem}().set(buf, ptr);
                     WASM_VECTOR_LEN = buf.length;
                     return ptr;
                 }}
@@ -1204,7 +1205,7 @@ impl<'a> Context<'a> {
                     mem[ptr + offset] = code;
                 }}
             ",
-            mem = mem,
+            mem = get_mem,
         );
 
         // TODO:
@@ -1220,8 +1221,9 @@ impl<'a> Context<'a> {
                     if (offset !== 0) {{
                         arg = arg.slice(offset);
                     }}
-                    ptr = realloc(ptr, len, len = offset + arg.length * 3);
-                    const view = {mem}().subarray(ptr + offset, ptr + len);
+                    const remainingLen = arg.length * 3;
+                    ptr = realloc(ptr, len, len = offset + remainingLen);
+                    const view = new Uint8Array(wasm.{mem}.buffer, ptr + offset, remainingLen);
                     const ret = encodeString(arg, view);
                     {debug_end}
                     offset += ret.written;
@@ -1415,10 +1417,9 @@ impl<'a> Context<'a> {
 
     fn expose_get_string_from_wasm(&mut self, memory: MemoryId) -> Result<MemView, Error> {
         self.expose_text_decoder()?;
-        let mem = self.expose_uint8_memory(memory);
         let ret = MemView {
             name: "getStringFromWasm".into(),
-            num: mem.num,
+            num: self.memory_idx(memory),
         };
 
         if !self.should_write_global(ret.to_string()) {
@@ -1429,20 +1430,26 @@ impl<'a> Context<'a> {
         // avoid copying too much data. If, however, a `SharedArrayBuffer` is
         // being used it looks like that is rejected by `TextDecoder` or
         // otherwise doesn't work with it. When we detect a shared situation we
-        // use `slice` which creates a new array instead of `subarray` which
+        // use `slice` which creates a new array instead of `new Uint8Array` which
         // creates just a view. That way in shared mode we copy more data but in
         // non-shared mode there's no need to copy the data except for the
         // string itself.
         let is_shared = self.module.memories.get(memory).shared;
-        let method = if is_shared { "slice" } else { "subarray" };
+        let slice = if is_shared {
+            let mem = self.expose_uint8_memory(memory);
+            format!("{}().slice(ptr, ptr + len)", mem)
+        } else {
+            let mem = self.export_name_of(memory);
+            format!("new Uint8Array(wasm.{}.buffer, ptr, len)", mem)
+        };
 
         self.global(&format!(
             "
             function {}(ptr, len) {{
-                return cachedTextDecoder.decode({}().{}(ptr, ptr + len));
+                return cachedTextDecoder.decode({});
             }}
             ",
-            ret, mem, method
+            ret, slice
         ));
         Ok(ret)
     }
@@ -1494,23 +1501,22 @@ impl<'a> Context<'a> {
     }
 
     fn expose_get_array_js_value_from_wasm(&mut self, memory: MemoryId) -> Result<MemView, Error> {
-        let mem = self.expose_uint32_memory(memory);
         let ret = MemView {
             name: "getArrayJsValueFromWasm".into(),
-            num: mem.num,
+            num: self.memory_idx(memory),
         };
         if !self.should_write_global(ret.to_string()) {
             return Ok(ret);
         }
         match (self.aux.externref_table, self.aux.externref_drop_slice) {
             (Some(table), Some(drop)) => {
+                let mem = self.export_name_of(memory);
                 let table = self.export_name_of(table);
                 let drop = self.export_name_of(drop);
                 self.global(&format!(
                     "
                     function {}(ptr, len) {{
-                        const mem = {}();
-                        const slice = mem.subarray(ptr / 4, ptr / 4 + len);
+                        const slice = new Uint32Array(wasm.{}.buffer, ptr, len);
                         const result = [];
                         for (let i = 0; i < slice.length; i++) {{
                             result.push(wasm.{}.get(slice[i]));
@@ -1524,11 +1530,11 @@ impl<'a> Context<'a> {
             }
             _ => {
                 self.expose_take_object();
+                let mem = self.export_name_of(memory);
                 self.global(&format!(
                     "
                     function {}(ptr, len) {{
-                        const mem = {}();
-                        const slice = mem.subarray(ptr / 4, ptr / 4 + len);
+                        const slice = new Uint32Array(wasm.{}.buffer, ptr, len);
                         const result = [];
                         for (let i = 0; i < slice.length; i++) {{
                             result.push(takeObject(slice[i]));
@@ -1544,95 +1550,78 @@ impl<'a> Context<'a> {
     }
 
     fn expose_get_array_i8_from_wasm(&mut self, memory: MemoryId) -> MemView {
-        let view = self.expose_int8_memory(memory);
-        self.arrayget("getArrayI8FromWasm", view, 1)
+        self.arrayget("getArrayI8FromWasm", "Int8Array", memory)
     }
 
     fn expose_get_array_u8_from_wasm(&mut self, memory: MemoryId) -> MemView {
-        let view = self.expose_uint8_memory(memory);
-        self.arrayget("getArrayU8FromWasm", view, 1)
+        self.arrayget("getArrayU8FromWasm", "Uint8Array", memory)
     }
 
     fn expose_get_clamped_array_u8_from_wasm(&mut self, memory: MemoryId) -> MemView {
-        let view = self.expose_clamped_uint8_memory(memory);
-        self.arrayget("getClampedArrayU8FromWasm", view, 1)
+        self.arrayget("getClampedArrayU8FromWasm", "Uint8ClampedArray", memory)
     }
 
     fn expose_get_array_i16_from_wasm(&mut self, memory: MemoryId) -> MemView {
-        let view = self.expose_int16_memory(memory);
-        self.arrayget("getArrayI16FromWasm", view, 2)
+        self.arrayget("getArrayI16FromWasm", "Int16Array", memory)
     }
 
     fn expose_get_array_u16_from_wasm(&mut self, memory: MemoryId) -> MemView {
-        let view = self.expose_uint16_memory(memory);
-        self.arrayget("getArrayU16FromWasm", view, 2)
+        self.arrayget("getArrayU16FromWasm", "Uint16Array", memory)
     }
 
     fn expose_get_array_i32_from_wasm(&mut self, memory: MemoryId) -> MemView {
-        let view = self.expose_int32_memory(memory);
-        self.arrayget("getArrayI32FromWasm", view, 4)
+        self.arrayget("getArrayI32FromWasm", "Int32Array", memory)
     }
 
     fn expose_get_array_u32_from_wasm(&mut self, memory: MemoryId) -> MemView {
-        let view = self.expose_uint32_memory(memory);
-        self.arrayget("getArrayU32FromWasm", view, 4)
+        self.arrayget("getArrayU32FromWasm", "Uint32Array", memory)
     }
 
     fn expose_get_array_i64_from_wasm(&mut self, memory: MemoryId) -> MemView {
-        let view = self.expose_int64_memory(memory);
-        self.arrayget("getArrayI64FromWasm", view, 8)
+        self.arrayget("getArrayI64FromWasm", "BigInt64Array", memory)
     }
 
     fn expose_get_array_u64_from_wasm(&mut self, memory: MemoryId) -> MemView {
-        let view = self.expose_uint64_memory(memory);
-        self.arrayget("getArrayU64FromWasm", view, 8)
+        self.arrayget("getArrayU64FromWasm", "BigUint64Array", memory)
     }
 
     fn expose_get_array_f32_from_wasm(&mut self, memory: MemoryId) -> MemView {
-        let view = self.expose_f32_memory(memory);
-        self.arrayget("getArrayF32FromWasm", view, 4)
+        self.arrayget("getArrayF32FromWasm", "Float32Array", memory)
     }
 
     fn expose_get_array_f64_from_wasm(&mut self, memory: MemoryId) -> MemView {
-        let view = self.expose_f64_memory(memory);
-        self.arrayget("getArrayF64FromWasm", view, 8)
+        self.arrayget("getArrayF64FromWasm", "Float64Array", memory)
     }
 
-    fn arrayget(&mut self, name: &'static str, view: MemView, size: usize) -> MemView {
+    fn arrayget(
+        &mut self,
+        name: &'static str,
+        buffer_kind: &'static str,
+        memory: walrus::MemoryId,
+    ) -> MemView {
         let ret = MemView {
             name: name.into(),
-            num: view.num,
+            num: self.memory_idx(memory),
         };
         if !self.should_write_global(name) {
             return ret;
         }
+        let mem = self.export_name_of(memory);
         self.global(&format!(
             "
             function {name}(ptr, len) {{
-                return {mem}().subarray(ptr / {size}, ptr / {size} + len);
+                return new {buffer_kind}(wasm.{mem}.buffer, ptr, len);
             }}
             ",
             name = ret,
-            mem = view,
-            size = size,
+            buffer_kind = buffer_kind,
+            mem = mem,
         ));
         return ret;
     }
 
-    fn expose_int8_memory(&mut self, memory: MemoryId) -> MemView {
-        self.memview("Int8", memory)
-    }
-
     fn expose_uint8_memory(&mut self, memory: MemoryId) -> MemView {
         self.memview("Uint8", memory)
-    }
-
-    fn expose_clamped_uint8_memory(&mut self, memory: MemoryId) -> MemView {
-        self.memview("Uint8Clamped", memory)
-    }
-
-    fn expose_int16_memory(&mut self, memory: MemoryId) -> MemView {
-        self.memview("Int16", memory)
     }
 
     fn expose_uint16_memory(&mut self, memory: MemoryId) -> MemView {
@@ -1647,10 +1636,6 @@ impl<'a> Context<'a> {
         self.memview("Uint32", memory)
     }
 
-    fn expose_int64_memory(&mut self, memory: MemoryId) -> MemView {
-        self.memview("BigInt64", memory)
-    }
-
     fn expose_uint64_memory(&mut self, memory: MemoryId) -> MemView {
         self.memview("BigUint64", memory)
     }
@@ -1661,25 +1646,6 @@ impl<'a> Context<'a> {
 
     fn expose_f64_memory(&mut self, memory: MemoryId) -> MemView {
         self.memview("Float64", memory)
-    }
-
-    fn memview_function(&mut self, t: VectorKind, memory: MemoryId) -> MemView {
-        match t {
-            VectorKind::String => self.expose_uint8_memory(memory),
-            VectorKind::I8 => self.expose_int8_memory(memory),
-            VectorKind::U8 => self.expose_uint8_memory(memory),
-            VectorKind::ClampedU8 => self.expose_clamped_uint8_memory(memory),
-            VectorKind::I16 => self.expose_int16_memory(memory),
-            VectorKind::U16 => self.expose_uint16_memory(memory),
-            VectorKind::I32 => self.expose_int32_memory(memory),
-            VectorKind::U32 => self.expose_uint32_memory(memory),
-            VectorKind::I64 => self.expose_int64_memory(memory),
-            VectorKind::U64 => self.expose_uint64_memory(memory),
-            VectorKind::F32 => self.expose_f32_memory(memory),
-            VectorKind::F64 => self.expose_f64_memory(memory),
-            VectorKind::Externref => self.expose_uint32_memory(memory),
-            VectorKind::NamedExternref(_) => self.expose_uint32_memory(memory),
-        }
     }
 
     fn memview(&mut self, kind: &'static str, memory: walrus::MemoryId) -> MemView {
@@ -1706,6 +1672,15 @@ impl<'a> Context<'a> {
             mem = mem,
         ));
         return view;
+    }
+
+    fn memory_idx(&mut self, memory: walrus::MemoryId) -> usize {
+        let next = self.memories.len();
+        let &mut (num, _) = self
+            .memories
+            .entry(memory)
+            .or_insert((next, Default::default()));
+        num
     }
 
     fn memview_memory(&mut self, kind: &'static str, memory: walrus::MemoryId) -> MemView {

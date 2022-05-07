@@ -922,15 +922,16 @@ fn instruction(js: &mut JsBuilder, instr: &Instruction, log_error: &mut bool) ->
             // Next we set up a `finally` clause which will both update the
             // original mutable slice with any modifications, and then free the
             // Rust-backed memory.
+            let mem = js.cx.export_name_of(*mem);
             let free = js.cx.export_name_of(*free);
-            let get = js.cx.memview_function(kind.clone(), *mem);
             js.finally(&format!(
                 "
-                    {val}.set({get}().subarray(ptr{i} / {size}, ptr{i} / {size} + len{i}));
+                    {val}.set(new {buffer}(wasm.{mem}.buffer, ptr{i}, len{i}));
                     wasm.{free}(ptr{i}, len{i} * {size});
                 ",
                 val = val,
-                get = get,
+                buffer = kind.buffer_ty(),
+                mem = mem,
                 free = free,
                 size = kind.size(),
                 i = i,

@@ -268,6 +268,24 @@ impl VectorKind {
         }
     }
 
+    pub fn buffer_ty(&self) -> &'static str {
+        match *self {
+            VectorKind::I8 => "Int8Array",
+            VectorKind::U8 | VectorKind::String => "Uint8Array",
+            VectorKind::ClampedU8 => "ClampedUint8Array",
+            VectorKind::I16 => "Int16Array",
+            VectorKind::U16 => "Uint16Array",
+            VectorKind::I32 => "Int32Array",
+            VectorKind::U32 | VectorKind::Externref | VectorKind::NamedExternref(_) => {
+                "Uint32Array"
+            }
+            VectorKind::I64 => "Int64Array",
+            VectorKind::U64 => "Uint64Array",
+            VectorKind::F32 => "Float32Array",
+            VectorKind::F64 => "Float64Array",
+        }
+    }
+
     pub fn size(&self) -> usize {
         match *self {
             VectorKind::String => 1,
