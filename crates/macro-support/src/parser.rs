@@ -1283,10 +1283,17 @@ impl<'a> MacroParse<(&'a mut TokenStream, BindgenAttrs)> for syn::ItemEnum {
                                 );
                             }
                         },
+                        syn::Expr::Lit(syn::ExprLit {
+                            attrs: _,
+                            lit: syn::Lit::Str(lit),
+                        }) => bail_span!(
+                            lit,
+                            "enums with #[wasm_bindgen] cannot mix string and non-string values"
+                        ),
                         expr => bail_span!(
                             expr,
                             "enums with #[wasm_bindgen] may only have \
-                             number literal values",
+                             string or number literal values",
                         ),
                     },
                     None => i as u32,
