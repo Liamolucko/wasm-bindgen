@@ -760,6 +760,13 @@ impl<'a> From<&'a str> for JsValue {
     }
 }
 
+impl<T> From<*mut T> for JsValue {
+    #[inline]
+    fn from(s: *mut T) -> JsValue {
+        JsValue::from(s as usize)
+    }
+}
+
 if_std! {
     impl<'a> From<&'a String> for JsValue {
         #[inline]
