@@ -767,6 +767,13 @@ impl<T> From<*mut T> for JsValue {
     }
 }
 
+impl<T> From<*const T> for JsValue {
+    #[inline]
+    fn from(s: *const T) -> JsValue {
+        JsValue::from(s as usize)
+    }
+}
+
 if_std! {
     impl<'a> From<&'a String> for JsValue {
         #[inline]
