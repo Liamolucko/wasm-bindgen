@@ -21,6 +21,49 @@ exports.js_simple = () => {
     r3.free();
 };
 
+exports.js_subclasses = () => {
+    class Subclass extends wasm.ClassesSimple {
+        constructor() {
+            super();
+            this.value = 42;
+        }
+
+        getValue() {
+            return this.value;
+        }
+    }
+
+    const subclass = new Subclass();
+    assert(subclass instanceof Subclass);
+    assert(subclass instanceof wasm.ClassesSimple);
+    assert.strictEqual(subclass.getValue(), 42);
+    assert.strictEqual(subclass.add(0), 0);
+    assert.strictEqual(subclass.add(1), 1);
+    assert.strictEqual(subclass.add(1), 2);
+    subclass.free();
+
+    class OverridingSubclass extends wasm.ClassesSimple {
+        constructor() {
+            super();
+            this.value = 42;
+        }
+
+        getValue() {
+            return this.value;
+        }
+
+        add(value) {
+            this.value += value;
+        }
+    }
+
+    const overrider = new OverridingSubclass();
+    assert.strictEqual(overrider.getValue(), 42);
+    assert.strictEqual(overrider.add(3), undefined);
+    assert.strictEqual(overrider.getValue(), 45);
+    overrider.free();
+};
+
 exports.js_strings = () => {
     const r = wasm.ClassesStrings1.new();
     r.set(3);

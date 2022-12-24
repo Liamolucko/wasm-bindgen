@@ -4,7 +4,7 @@ use crate::intrinsic::Intrinsic;
 use crate::{decode, PLACEHOLDER_MODULE};
 use anyhow::{anyhow, bail, Error};
 use std::collections::{HashMap, HashSet};
-use std::str;
+use std::{mem, str};
 use walrus::MemoryId;
 use walrus::{ExportId, FunctionId, ImportId, Module};
 use wasm_bindgen_shared::struct_function_export_name;
@@ -423,7 +423,15 @@ impl<'a> Context<'a> {
             Some(class) => {
                 let class = class.to_string();
                 match export.method_kind {
-                    decode::MethodKind::Constructor => AuxExportKind::Constructor(class),
+                    decode::MethodKind::Constructor => {
+                        let old_ret = mem::replace(&mut descriptor.ret, Descriptor::U32);
+                        if !matches!(old_ret, Descriptor::RustStruct(ref ret_class) if ret_class == &class)
+                        {
+                            bail!("Constructor for `{class}` does not return an instance of `{class}`");
+                        }
+
+                        AuxExportKind::Constructor(class)
+                    }
                     decode::MethodKind::Operation(op) => {
                         if !op.is_static {
                             // Make the first argument be the index of the receiver.

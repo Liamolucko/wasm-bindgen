@@ -117,7 +117,7 @@ pub struct AsyncStruct;
 #[wasm_bindgen]
 impl AsyncStruct {
     #[wasm_bindgen(constructor)]
-    pub async fn new() -> AsyncStruct {
+    pub fn new() -> AsyncStruct {
         AsyncStruct
     }
 

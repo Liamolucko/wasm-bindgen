@@ -7,6 +7,7 @@ use wasm_bindgen_test::*;
 #[wasm_bindgen(module = "tests/wasm/classes.js")]
 extern "C" {
     fn js_simple();
+    fn js_subclasses();
     fn js_strings();
     fn js_exceptions();
     fn js_pass_one_to_another();
@@ -39,6 +40,11 @@ extern "C" {
 #[wasm_bindgen_test]
 fn simple() {
     js_simple();
+}
+
+#[wasm_bindgen_test]
+fn subclasses() {
+    js_subclasses();
 }
 
 #[wasm_bindgen]

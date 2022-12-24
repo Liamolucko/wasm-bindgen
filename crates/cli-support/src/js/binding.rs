@@ -172,7 +172,14 @@ impl<'a, 'b> Builder<'a, 'b> {
             0 => {}
             1 => {
                 let val = js.pop();
-                js.prelude(&format!("return {};", val));
+                if self.constructor.is_some() {
+                    // Instead of returning, initialize `this`.
+                    // We should have already switched the return type to `u32` earlier.
+                    assert_eq!(adapter.results, [AdapterType::U32]);
+                    js.prelude(&format!("this.ptr = {};", val));
+                } else {
+                    js.prelude(&format!("return {};", val));
+                }
             }
 
             // TODO: this should be pretty trivial to support (commented out
