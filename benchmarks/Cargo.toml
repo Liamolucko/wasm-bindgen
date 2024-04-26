@@ -1,0 +1,13 @@
+[package]
+name = "wasm-bindgen-benchmark"
+version = "0.1.0"
+authors = ["The wasm-bindgen Developers"]
+rust-version = "1.57"
+
+[dependencies]
+wasm-bindgen = { path = '../' }
+web-sys = { path = '../crates/web-sys', features = ['Node'] }
+js-sys = { path = '../crates/js-sys' }
+
+[lib]
+crate-type = ['cdylib']
